@@ -4,8 +4,8 @@ pragma experimental ABIEncoderV2;
 
 import "./libraries/BoringMath.sol";
 import "./libraries/SignedSafeMath.sol";
-import "@openzeppelin/contracts/access/Ownable.sol";
 import "./libraries/BoringERC20.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
 
 /************************************************************************************************
 Originally from
@@ -17,108 +17,80 @@ at commit hash 10148a31d9192bc803dac5d24fe0319b52ae99a4.
 *************************************************************************************************/
 
 
-contract SDAOBondedTokenStakingV2 is Ownable {
+contract SDAOTokenStaking is Ownable {
   using BoringMath for uint256;
   using BoringMath128 for uint128;
   using BoringERC20 for IERC20;
   using SignedSafeMath for int256;
 
-/** ==========  Constants  ========== */
-
-  uint256 private constant ACC_REWARDS_PRECISION = 1e18;
-
-  /**
-   * @dev ERC20 token used to distribute rewards.
-   */
-  IERC20 public immutable rewardsToken;
-
-  IERC20 public immutable discountToken;
-
-  uint256 private maxdeposit = 25000 * 1e18;
-
-/** ==========  Structs  ========== */
-
-  /**
-   * @dev Info of each user.
-   * @param amount LP token amount the user has provided.
-   * @param rewardDebt The amount of rewards entitled to the user.
-   */
+  //==========  Structs  ==========
+  
+  /// @dev Info of each user.
+  /// @param amount LP token amount the user has provided.
+  /// @param rewardDebt The amount of rewards entitled to the user.
   struct UserInfo {
     uint256 amount;
     int256 rewardDebt;
-    uint endOfLockup;
   }
 
-  /**
-   * @dev Info of each rewards pool.
-   * @param accRewardsPerShare Total rewards accumulated per staked token.
-   * @param lastRewardBlock Last time rewards were updated for the pool.
-   * @param allocPoint The amount of allocation points assigned to the pool.
-   */
+
+  /// @dev Info of each rewards pool.
+  /// @param tokenPerBlock Reward tokens per block number.
+  /// @param lpSupply Total staked amount.
+  /// @param accRewardsPerShare Total rewards accumulated per staked token.
+  /// @param lastRewardBlock Last time rewards were updated for the pool.
+  /// @param endOfEpochBlock End of epoc block number for compute and to avoid deposits.
   struct PoolInfo {
-    uint256 startBlock;
-    uint256 rewardAmountForEpoc;
-    uint256  totalStakeAmount;
-    uint256 windowRewardAmount;
+    uint256 tokenPerBlock;
+    uint256 lpSupply;
+    uint128 accRewardsPerShare;
     uint64 lastRewardBlock;
     uint endOfEpochBlock;
   }
 
-/** ==========  Events  ========== */
+  //==========  Constants  ==========
+
+  /// @dev For percision calculation while computing the rewards.
+  uint256 private constant ACC_REWARDS_PRECISION = 1e18;
+
+  /// @dev ERC20 token used to distribute rewards.   
+  IERC20 public immutable rewardsToken;
+
+  /** ==========  Storage  ========== */
+
+  /// @dev Indicates whether a staking pool exists for a given staking token.
+  //mapping(address => bool) public stakingPoolExists;
+  
+  /// @dev Info of each staking pool.
+  PoolInfo[] public poolInfo;
+  
+  /// @dev Address of the LP token for each staking pool.
+  mapping(uint256 => IERC20) public lpToken;
+  
+  /// @dev Info of each user that stakes tokens.
+  mapping(uint256 => mapping(address => UserInfo)) public userInfo;
+
+  /// @dev Account allowed to allocate points.
+  address public pointsAllocator;
+
+  /// @dev Total rewards received from governance for distribution.
+  /// Used to return remaining rewards if staking is canceled.
+  uint256 public totalRewardsReceived;
+
+  // ==========  Events  ==========
 
   event Deposit(address indexed user, uint256 indexed pid, uint256 amount, address indexed to);
   event Withdraw(address indexed user, uint256 indexed pid, uint256 amount, address indexed to);
   event EmergencyWithdraw(address indexed user, uint256 indexed pid, uint256 amount, address indexed to);
   event Harvest(address indexed user, uint256 indexed pid, uint256 amount);
-  event LogPoolAddition(uint256 indexed pid, uint256 allocPoint, IERC20 indexed lpToken);
-  event LogSetPool(uint256 indexed pid, uint256 allocPoint, bool overwrite);
+  event LogPoolAddition(uint256 indexed pid, IERC20 indexed lpToken);
   event LogUpdatePool(uint256 indexed pid, uint64 lastRewardBlock, uint256 lpSupply, uint256 accRewardsPerShare);
   event RewardsAdded(uint256 amount);
   event PointsAllocatorSet(address pointsAllocator);
 
-/** ==========  Storage  ========== */
-  /**
-   * @dev Indicates whether a staking pool exists for a given staking token.
-   */
-  mapping(address => bool) public stakingPoolExists;
+  // ==========  Modifiers  ========== 
 
-  /**
-   * @dev Info of each staking pool.
-   */
-  PoolInfo[] public poolInfo;
-
-  /**
-   * @dev Address of the LP token for each staking pool.
-   */
-  mapping(uint256 => IERC20) public lpToken;
-
-
-  /**
-   * @dev Info of each user that stakes tokens.
-   */
-  mapping(uint256 => mapping(address => UserInfo)) public userInfo;
-
-
-  /**
-   * @dev Account allowed to allocate points.
-   */
-  address public pointsAllocator;
-
-  /**
-   * @dev Total rewards received from governance for distribution.
-   * Used to return remaining rewards if staking is canceled.
-   */
-  uint256 public totalRewardsReceived;
-
-  function poolLength() external view returns (uint256) {
-    return poolInfo.length;
-  }
-
-/** ==========  Modifiers  ========== */
-
-  /**
-   * @dev Ensure the caller is allowed to allocate points.
-   */
+  /// @dev Ensure the caller is allowed to allocate points.
   modifier onlyPointsAllocatorOrOwner {
     require(
       msg.sender == pointsAllocator || msg.sender == owner(),
@@ -127,72 +99,80 @@ contract SDAOBondedTokenStakingV2 is Ownable {
     _;
   }
 
-/** ==========  Constructor  ========== */
+  // ==========  Constructor  ==========
 
-  constructor(address _rewardsToken,address _discountToken) public {
+  /// @dev During the deployment of the contract pass the ERC-20 contract address used for rewards.
+  constructor(address _rewardsToken) public {
     rewardsToken = IERC20(_rewardsToken);
-    discountToken = IERC20(_discountToken);
   }
 
-/** ==========  Governance  ========== */
+  // ==========  Governance  ========== 
 
-  /**
-   * @dev Set the address of the points allocator.
-   * This account will have the ability to set allocation points for LP rewards.
-   */
+  /// @dev Set the address of the points allocator.
+  /// This account will have the ability to set allocation points for LP rewards.
   function setPointsAllocator(address _pointsAllocator) external onlyOwner {
+    require(_pointsAllocator != address(0), "Invalid points allocator address.");
     pointsAllocator = _pointsAllocator;
     emit PointsAllocatorSet(_pointsAllocator);
   }
 
-  /**
-   * @dev Add rewards to be distributed.
-   *
-   * Note: This function must be used to add rewards if the owner
-   * wants to retain the option to cancel distribution and reclaim
-   * undistributed tokens.
-   */
+  /// @dev Add rewards to be distributed.
+  /// Note: This function must be used to add rewards if the owner
+  /// wants to retain the option to cancel distribution and reclaim
+  /// undistributed tokens.  
   function addRewards(uint256 amount) external onlyPointsAllocatorOrOwner {
-    rewardsToken.safeTransferFrom(msg.sender, address(this), amount);
+    
+    require(rewardsToken.balanceOf(msg.sender) > 0, "ERC20: not enough tokens to transfer");
+
     totalRewardsReceived = totalRewardsReceived.add(amount);
+    rewardsToken.safeTransferFrom(msg.sender, address(this), amount);
+    
     emit RewardsAdded(amount);
   }
 
 
 
-/** ==========  Pools  ========== */
-  /**
-   * @dev Add a new LP to the pool.
-   * Can only be called by the owner or the points allocator.
-   * @param _allocPoint AP of the new pool.
-   * @param _lpToken Address of the LP ERC-20 token.
-   */
-  function add(IERC20 _lpToken,uint256 _windowTotalStake, uint256 _rewardAmountForEpoc,uint _endofepochblock, uint256 _startBlock,uint256 _lastRewardBlock) public onlyPointsAllocatorOrOwner {
-    require(!stakingPoolExists[address(_lpToken)], " Staking pool already exists.");
+  // ==========  Pools  ==========
+  
+  /// @dev Add a new LP to the pool.
+  /// Can only be called by the owner or the points allocator.
+  /// @param _lpToken Address of the LP ERC-20 token.
+  /// @param _sdaoPerBlock Rewards per block.
+  /// @param _endofepochblock Epocs end block number.
+  function add(IERC20 _lpToken, uint256 _sdaoPerBlock, uint64 _endofepochblock) public onlyPointsAllocatorOrOwner {
+
+    //This is not needed as we are going to use the contract for multiple pools with the same LP Tokens
+    //require(!stakingPoolExists[address(_lpToken)], " Staking pool already exists.");
+    
+    require(_endofepochblock > block.number, "Cannot create the pool for past time.");
+
     uint256 pid = poolInfo.length;
 
     lpToken[pid] = _lpToken;
 
     poolInfo.push(PoolInfo({
-      startBlock : _startBlock,
-      windowTotalStake: _windowTotalStake,
-      rewardAmountForEpoc: _rewardAmountForEpoc,
+      tokenPerBlock: _sdaoPerBlock,
       endOfEpochBlock:_endofepochblock,
-      lastRewardBlock: _lastRewardBlock,
+      lastRewardBlock: block.number.to64(),
+      lpSupply:0,
+      accRewardsPerShare: 0
     }));
 
-    stakingPoolExists[address(_lpToken)] = true;
+    //stakingPoolExists[address(_lpToken)] = true;
 
-    emit LogPoolAddition(pid,_allocPoint, _lpToken);
+    emit LogPoolAddition(pid, _lpToken);
   }
 
 
+  /// @dev To get the rewards per block.
+  function sdaoPerBlock(uint256 _pid) public view returns (uint256 amount) {
+      PoolInfo memory pool = poolInfo[_pid];
+      amount = pool.tokenPerBlock;
+  }
 
-  /**
-   * @dev Update reward variables for all pools in `pids`.
-   * Note: This can become very expensive.
-   * @param pids Pool IDs of all to be updated. Make sure to update all active pools.
-   */
+  /// @dev Update reward variables for all pools in `pids`.
+  /// Note: This can become very expensive.
+  /// @param pids Pool IDs of all to be updated. Make sure to update all active pools.
   function massUpdatePools(uint256[] calldata pids) external onlyOwner {
     uint256 len = pids.length;
     for (uint256 i = 0; i < len; ++i) {
@@ -200,195 +180,217 @@ contract SDAOBondedTokenStakingV2 is Ownable {
     }
   }
 
-/** ==========  Users  ========== */
 
-  /**
-   * @dev View function to see pending rewards on frontend.
-   * @param _pid The index of the pool. See `poolInfo`.
-   * @param _user Address of user.
-   * @return pending rewards for a given user.
-   */
+  /// @dev Update reward variables of the given pool.
+  /// @param _pid The index of the pool. See `poolInfo`.
+  /// @return pool Returns the pool that was updated.
+ function updatePool(uint256 _pid) private returns (PoolInfo memory pool) {
+
+    pool = poolInfo[_pid];
+    uint256 lpSupply = pool.lpSupply;
+
+    if (block.number > pool.lastRewardBlock && pool.lastRewardBlock < pool.endOfEpochBlock) {
+
+       if(lpSupply > 0){
+         
+           uint256 blocks;
+           if(block.number < pool.endOfEpochBlock) {
+             blocks = block.number.sub(pool.lastRewardBlock);
+           } else {
+             blocks = pool.endOfEpochBlock.sub(pool.lastRewardBlock);
+          }
+
+          uint256 sdaoReward = blocks.mul(sdaoPerBlock(_pid));
+          pool.accRewardsPerShare = pool.accRewardsPerShare.add((sdaoReward.mul(ACC_REWARDS_PRECISION) / lpSupply).to128());
+
+       }
+
+       pool.lastRewardBlock = block.number.to64();
+       poolInfo[_pid] = pool;
+       emit LogUpdatePool(_pid, pool.lastRewardBlock, lpSupply, pool.accRewardsPerShare);
+
+    }
+
+  }
+
+
+
+  // ==========  Users  ==========
+
+  /// @dev View function to see pending rewards on frontend.
+  /// @param _pid The index of the pool. See `poolInfo`.
+  /// @param _user Address of user.
+  /// @return pending rewards for a given user.
   function pendingRewards(uint256 _pid, address _user) external view returns (uint256 pending) {
+
     PoolInfo memory pool = poolInfo[_pid];
     UserInfo storage user = userInfo[_pid][_user];
-    pending =  _calculateRewardAmount(_pid,user.amount);
 
+    uint256 accRewardsPerShare = pool.accRewardsPerShare;
+    uint256 lpSupply = pool.lpSupply;
+
+    if (block.number > pool.lastRewardBlock && pool.lastRewardBlock < pool.endOfEpochBlock) {
+
+      if(lpSupply > 0){
+
+        uint256 blocks;
+
+        if(block.number < pool.endOfEpochBlock) {
+            blocks = block.number.sub(pool.lastRewardBlock);
+        } else {
+          blocks = pool.endOfEpochBlock.sub(pool.lastRewardBlock);
+        }
+        
+        uint256 sdaoReward = blocks.mul(sdaoPerBlock(_pid));
+        accRewardsPerShare = accRewardsPerShare.add(sdaoReward.mul(ACC_REWARDS_PRECISION) / lpSupply);
+
+      }
+
+    }
+
+    pending = int256(user.amount.mul(accRewardsPerShare) / ACC_REWARDS_PRECISION).sub(user.rewardDebt).toUInt256();
   }
 
 
-  function _calculateRewardAmount(uint256 _pid, uint256 stakeAmount) internal view returns(uint256) {
-
-    PoolInfo memory pool = poolInfo[_pid];
-    uint256 calcRewardAmount;
-    calcRewardAmount = stakeAmount.mul(pool.windowRewardAmount).div(pool.windowTotalStake.sub(pool.windowRewardAmount));
-    return calcRewardAmount;
-  }
-
-  /**
-   * @dev Deposit LP tokens to earn rewards.
-   * @param _pid The index of the pool. See `poolInfo`.
-   * @param _amount LP token amount to deposit.
-   * @param _to The receiver of `_amount` deposit benefit.
-   */
-
+  /// @dev Deposit LP tokens to earn rewards.
+  /// @param _pid The index of the pool. See `poolInfo`.
+  /// @param _amount LP token amount to deposit.
+  /// @param _to The receiver of `_amount` deposit benefit.
   function deposit(uint256 _pid, uint256 _amount, address _to) public {
 
+    // Input Validation
+    require(_amount > 0 && _to != address(0), "Invalid inputs for deposit.");
+
+    PoolInfo memory pool = updatePool(_pid);
     UserInfo storage user = userInfo[_pid][_to];
 
-    // check if epoch as ended
-    require (pool.endOfEpochBlock > block.number,"This pool epoch has ended. Please join staking new cession");
-
-    require (_amount < maxdeposit, "you cannot stake more than 25000 sdao");
+    // check if epoch as ended or if pool doesnot exist 
+    require (pool.endOfEpochBlock > block.number,"This pool epoch has ended. Please join staking new session.");
     
     user.amount = user.amount.add(_amount);
+    user.rewardDebt = user.rewardDebt.add(int256(_amount.mul(pool.accRewardsPerShare) / ACC_REWARDS_PRECISION));
+
+    // Add to total supply
+    pool.lpSupply = pool.lpSupply.add(_amount);
+    // Update the pool back
+    poolInfo[_pid] = pool;
 
     // Interactions
     lpToken[_pid].safeTransferFrom(msg.sender, address(this), _amount);
 
-    pool.windowTotalStake.add(_amount);
-
     emit Deposit(msg.sender, _pid, _amount, _to);
   }
 
-  /**
-   * @dev Withdraw LP tokens from the staking contract.
-   * @param _pid The index of the pool. See `poolInfo`.
-   * @param _amount LP token amount to withdraw.
-   * @param _to Receiver of the LP tokens.
-   */
+  /// @dev Withdraw LP tokens from the staking contract.
+  /// @param _pid The index of the pool. See `poolInfo`.
+  /// @param _amount LP token amount to withdraw.
+  /// @param _to Receiver of the LP tokens.
   function withdraw(uint256 _pid, uint256 _amount, address _to) public {
 
     require(_to != address(0), "ERC20: transfer to the zero address");
-   
+
+    PoolInfo memory pool = updatePool(_pid);
     UserInfo storage user = userInfo[_pid][msg.sender];
-     require (user.endOfLockup > block.timestamp,"you cannot harvest yet");
 
+    // Check whether user has deposited stake
+    require(user.amount >= _amount && _amount > 0, "Invalid amount to withdraw.");
 
+    // Effects
+    user.rewardDebt = user.rewardDebt.sub(int256(_amount.mul(pool.accRewardsPerShare) / ACC_REWARDS_PRECISION));
     user.amount = user.amount.sub(_amount);
+
+    // Subtract from total supply
+    pool.lpSupply = pool.lpSupply.sub(_amount);
+    // Update the pool back
+    poolInfo[_pid] = pool;
 
     // Interactions
     lpToken[_pid].safeTransfer(_to, _amount);
-
-    pool.windowTotalStake.sub(_amount);
 
     emit Withdraw(msg.sender, _pid, _amount, _to);
   }
 
-  /**
-   * @dev Harvest proceeds for transaction sender to `_to`.
-   * @param _pid The index of the pool. See `poolInfo`.
-   * @param _to Receiver of rewards.
-   */
-  function harvest(uint256 _pid, address _to) public {
+
+   /// @dev Harvest proceeds for transaction sender to `_to`.
+   /// @param _pid The index of the pool. See `poolInfo`.
+   /// @param _to Receiver of rewards.
+   function harvest(uint256 _pid, address _to) public {
+    
     require(_to != address(0), "ERC20: transfer to the zero address");
 
+    PoolInfo memory pool = updatePool(_pid);
     UserInfo storage user = userInfo[_pid][msg.sender];
 
+    int256 accumulatedRewards = int256(user.amount.mul(pool.accRewardsPerShare) / ACC_REWARDS_PRECISION);
+    uint256 _pendingRewards = accumulatedRewards.sub(user.rewardDebt).toUInt256();
 
-    uint256 _pendingRewards = _calculateRewardAmount(_pid,user.amount);
+    // Effects
+    user.rewardDebt = accumulatedRewards;
 
-    uint256 amount = user.amount /100;
-    uint256 minimumreward = amount.mul(30);
-
-    require (pool.endOfLockup > block.timestamp,"you cannot harvest yet");
-    
- 
     // Interactions
-    rewardsToken.safeTransfer(_to, _pendingRewards);
-
-    if(_pendingRewards < minimumreward ){
-
-      discountToken.safeTransfer(_to, minimumreward);
-
-      user.amount = user.amount.sub(amount);
-
-      pool.windowTotalStake.sub(_amount);
-
-      emit Harvest(msg.sender, _pid, minimumreward);
-
-    } else {
-
-      discountToken.safeTransfer(_to, _pendingRewards);
-
-      user.amount = user.amount.sub(amount);
-
-      pool.windowTotalStake.sub(_amount);
-
-      emit Harvest(msg.sender, _pid, _pendingRewards);
+    if(_pendingRewards > 0 ) {
+      rewardsToken.safeTransfer(_to, _pendingRewards);
     }
-
-   
+    
+    emit Harvest(msg.sender, _pid, _pendingRewards);
   }
 
-  /**
-   * @dev Withdraw LP tokens and harvest accumulated rewards, sending both to `to`.
-   * @param _pid The index of the pool. See `poolInfo`.
-   * @param _amount LP token amount to withdraw.
-   * @param _to Receiver of the LP tokens and rewards.
-   */
+  //// @dev Withdraw LP tokens and harvest accumulated rewards, sending both to `to`.
+  /// @param _pid The index of the pool. See `poolInfo`.
+  /// @param _amount LP token amount to withdraw.
+  /// @param _to Receiver of the LP tokens and rewards.
   function withdrawAndHarvest(uint256 _pid, uint256 _amount, address _to) public {
+
     require(_to != address(0), "ERC20: transfer to the zero address");
 
+    PoolInfo memory pool = updatePool(_pid);
     UserInfo storage user = userInfo[_pid][msg.sender];
-    
 
-    uint256 _pendingRewards = _calculateRewardAmount(_pid,user.amount);
+    // Check if the user has stake in the pool
+    require(user.amount >= _amount && _amount > 0, "Cannot withdraw more than staked.");
 
-    uint256 amount = user.amount /100;
-    uint256 minimumreward = amount.mul(30);
+    int256 accumulatedRewards = int256(user.amount.mul(pool.accRewardsPerShare) / ACC_REWARDS_PRECISION);
+    uint256 _pendingRewards = accumulatedRewards.sub(user.rewardDebt).toUInt256();
+
     // Effects
     user.rewardDebt = accumulatedRewards.sub(int256(_amount.mul(pool.accRewardsPerShare) / ACC_REWARDS_PRECISION));
     user.amount = user.amount.sub(_amount);
 
-    require (user.endOfLockup > block.timestamp,"you cannot harvest yet");
+    // Subtract from total supply
+    pool.lpSupply = pool.lpSupply.sub(_amount);
+    // Update the pool back
+    poolInfo[_pid] = pool;
 
     // Interactions
-    rewardsToken.safeTransfer(_to, _pendingRewards);
-
-    if(_pendingRewards < minimumreward ){
-
-      user.amount = user.amount.sub(amount);
-
-      discountToken.safeTransfer(_to, minimumreward);
-
-      pool.windowTotalStake.sub(_amount);
-
-    } else {
-
-      user.amount = user.amount.sub(amount);
-
-      discountToken.safeTransfer(_to, _pendingRewards);
-
-      pool.windowTotalStake.sub(_amount);
-
+    if(_pendingRewards > 0) {
+      rewardsToken.safeTransfer(_to, _pendingRewards);
     }
-
     lpToken[_pid].safeTransfer(_to, _amount);
-
-    pool.windowTotalStake.sub(_amount);
-
 
     emit Harvest(msg.sender, _pid, _pendingRewards);
     emit Withdraw(msg.sender, _pid, _amount, _to);
   }
 
-  /**
-   * @dev Withdraw without caring about rewards. EMERGENCY ONLY.
-   * @param _pid The index of the pool. See `poolInfo`.
-   * @param _to Receiver of the LP tokens.
-   */
+
+  /// @dev Withdraw without caring about rewards. EMERGENCY ONLY.
+  /// @param _pid The index of the pool. See `poolInfo`.
+  /// @param _to Receiver of the LP tokens.  
   function emergencyWithdraw(uint256 _pid, address _to) public {
+
     require(_to != address(0), "ERC20: transfer to the zero address");
-    // require (user.endOfLockup > block.timestamp,"you cannot harvest yet");
+
     UserInfo storage user = userInfo[_pid][msg.sender];
     uint256 amount = user.amount;
     user.amount = 0;
     user.rewardDebt = 0;
+
+    PoolInfo memory pool = updatePool(_pid);
+    pool.lpSupply = pool.lpSupply.sub(amount);
+    // Update the pool back
+    poolInfo[_pid] = pool;
+
     // Note: transfer can fail or succeed if `amount` is zero.
     lpToken[_pid].safeTransfer(_to, amount);
-    
-    PoolInfo memory pool = updatePool(_pid);
-    pool.windowTotalStake.sub(amount);
 
     emit EmergencyWithdraw(msg.sender, _pid, amount, _to);
   }
@@ -398,6 +400,12 @@ contract SDAOBondedTokenStakingV2 is Ownable {
     IERC20 Token = IERC20(token);
     uint256 currentTokenBalance = Token.balanceOf(address(this));
     Token.safeTransfer(msg.sender, currentTokenBalance); 
+  }
+
+  // ==========  Getter Functions  ==========
+
+  function poolLength() external view returns (uint256) {
+    return poolInfo.length;
   }
 
 
