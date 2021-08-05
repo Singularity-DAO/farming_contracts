@@ -367,6 +367,8 @@ contract SDAOBondedTokenStaking is Ownable {
     PoolInfo memory pool = updatePool(_pid);
     UserInfo storage user = userInfo[_pid][msg.sender];
 
+    // Check if epoch has ended
+    require(pool.endOfEpochBlock < block.number, "Cannot withdraw until the end of the epoch");
     // Check whether user has deposited stake
     require(user.amount >= _amount && _amount > 0, "Invalid amount to withdraw.");
 
@@ -421,6 +423,8 @@ contract SDAOBondedTokenStaking is Ownable {
     PoolInfo memory pool = updatePool(_pid);
     UserInfo storage user = userInfo[_pid][msg.sender];
 
+    // Check if epoch has ended
+    require(pool.endOfEpochBlock < block.number, "Cannot withdraw until the end of the epoch");
     // Check if the user has stake in the pool
     require(user.amount >= _amount && _amount > 0, "Cannot withdraw more than staked.");
 
