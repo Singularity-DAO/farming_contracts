@@ -17,7 +17,7 @@ at commit hash 10148a31d9192bc803dac5d24fe0319b52ae99a4.
 *************************************************************************************************/
 
 
-contract SDAOTokenStaking is Ownable {
+contract SDAOBondedTokenStaking is Ownable {
   using BoringMath for uint256;
   using BoringMath128 for uint128;
   using BoringERC20 for IERC20;
@@ -43,8 +43,11 @@ contract SDAOTokenStaking is Ownable {
   struct PoolInfo {
     uint256 tokenPerBlock;
     uint256 lpSupply;
+    uint256 maxDeposit;
+    uint256 maxLpSupply;
     uint128 accRewardsPerShare;
     uint64 lastRewardBlock;
+    uint startOfDepositBlock;
     uint endOfEpochBlock;
   }
 
@@ -85,6 +88,8 @@ contract SDAOTokenStaking is Ownable {
   event Harvest(address indexed user, uint256 indexed pid, uint256 amount);
   event LogPoolAddition(uint256 indexed pid, IERC20 indexed lpToken);
   event LogUpdatePool(uint256 indexed pid, uint64 lastRewardBlock, uint256 lpSupply, uint256 accRewardsPerShare);
+  event LogModifyPool(uint256 indexed pid, uint256 sdaoPerBlock, uint newEndOfEpochBlock);
+  // event StartNextEpoch();
   event RewardsAdded(uint256 amount);
   event PointsAllocatorSet(address pointsAllocator);
 
@@ -139,12 +144,14 @@ contract SDAOTokenStaking is Ownable {
   /// @param _lpToken Address of the LP ERC-20 token.
   /// @param _sdaoPerBlock Rewards per block.
   /// @param _endofepochblock Epocs end block number.
-  function add(IERC20 _lpToken, uint256 _sdaoPerBlock, uint64 _endofepochblock) public onlyPointsAllocatorOrOwner {
+  function add(IERC20 _lpToken, uint256 _sdaoPerBlock, uint64 _endofepochblock, uint64 _startOfDepositBlock, uint256 _maxDeposit, uint256 _maxLpSupply) public onlyPointsAllocatorOrOwner {
 
     //This is not needed as we are going to use the contract for multiple pools with the same LP Tokens
     //require(!stakingPoolExists[address(_lpToken)], " Staking pool already exists.");
     
     require(_endofepochblock > block.number, "Cannot create the pool for past time.");
+    require(_startOfDepositBlock > block.number, "Cannot start deposits in the past.");
+    require(_startOfDepositBlock < _endofepochblock, "Cannot start deposits after end of epoch.");
 
     uint256 pid = poolInfo.length;
 
@@ -153,7 +160,10 @@ contract SDAOTokenStaking is Ownable {
     poolInfo.push(PoolInfo({
       tokenPerBlock: _sdaoPerBlock,
       endOfEpochBlock:_endofepochblock,
+      maxDeposit: _maxDeposit,
+      maxLpSupply: _maxLpSupply,
       lastRewardBlock: block.number.to64(),
+      startOfDepositBlock: _startOfDepositBlock,
       lpSupply:0,
       accRewardsPerShare: 0
     }));
@@ -213,6 +223,66 @@ contract SDAOTokenStaking is Ownable {
 
   }
 
+  /// @dev Modify parameters of the given pool.
+  /// @param _pid The index of the pool. See `poolInfo`.
+  /// @param _sdaoPerBlock The new tokens per block that the pool distributes.
+  /// @param _endofepochblock The new end of epoch block.
+  /// @param _startOfDepositBlock The new end of epoch block.
+  /// @return pool Returns the pool that was modified.
+  function modifyPool(uint256 _pid, uint256 _sdaoPerBlock, uint256 _maxDeposit, uint256 _maxLpSupply, uint64 _endofepochblock, uint64 _startOfDepositBlock) private returns (PoolInfo memory pool) {
+
+    require(_endofepochblock > block.number, "Cannot create the pool for past time.");
+
+    // Get pool by ID and update rewards
+    pool = updatePool(_pid);
+
+    // Create a new struct for the pool, and update the token per blocks and end of epoch block
+    // LP Supply and accumulated rewards per share remain are preserved
+    PoolInfo memory newPool = PoolInfo({
+      tokenPerBlock: _sdaoPerBlock,
+      endOfEpochBlock: _endofepochblock,
+      maxDeposit: _maxDeposit,
+      maxLpSupply: _maxLpSupply,
+      startOfDepositBlock: _startOfDepositBlock,
+      lastRewardBlock: block.number.to64(),
+      lpSupply: pool.lpSupply,
+      accRewardsPerShare: pool.accRewardsPerShare
+    });
+
+    // Update pool with new parameters
+    poolInfo[_pid] = newPool;
+    pool = newPool;
+
+    emit LogModifyPool(_pid, pool.tokenPerBlock, pool.endOfEpochBlock);
+  }
+
+  /// @dev Modify parameters of a given list of pools.
+  /// @param pids The index of the pool. See `poolInfo`.
+  /// @param tokensPerBlock The new tokens per block that the pools distribute.
+  /// @param maxDeposits The maximum deposit that each pool will accept.
+  /// @param maxLpSupplies The maximum LP supply that each pool will accept.
+  /// @param _endofepochblock The new end of epoch block.
+  /// @param _startOfDepositBlock The new start of deposit block.
+  function startNextEpoch(uint256[] calldata pids, uint256[] calldata tokensPerBlock, uint256[] calldata maxDeposits, uint256[] calldata maxLpSupplies, uint64 _endofepochblock, uint64 _startOfDepositBlock) external onlyOwner {
+
+    require(_endofepochblock > block.number, "Cannot modify pools for past time.");
+    require(pids.length == tokensPerBlock.length, "Length of pool IDs and token per block array should be equal.");
+    require(pids.length == maxDeposits.length, "Length of pool IDs and maximum deposits should be equal.");
+    require(pids.length == maxLpSupplies.length, "Length of pool IDs and maximum LP supplies should be equal.");
+
+    uint256 len = pids.length;
+
+    // Check that all pools pass all conditions before transitioning them to the next epoch.
+    for (uint256 i = 0; i < len; ++i) {
+      require(_endofepochblock > poolInfo[pids[i]].endOfEpochBlock, "Cannot modify active pools");
+    }
+
+    // Modify pools
+    for (uint256 i = 0; i < len; ++i) {
+      modifyPool(pids[i], tokensPerBlock[i], maxDeposits[i], maxLpSupplies[i], _endofepochblock, _startOfDepositBlock);
+    }
+  }
+
 
 
   // ==========  Users  ==========
@@ -264,8 +334,13 @@ contract SDAOTokenStaking is Ownable {
     PoolInfo memory pool = updatePool(_pid);
     UserInfo storage user = userInfo[_pid][_to];
 
-    // check if epoch as ended or if pool doesnot exist 
-    require (pool.endOfEpochBlock > block.number,"This pool epoch has ended. Please join staking new session.");
+    // Check if deposit period is open
+    require(pool.startOfDepositBlock < block.number, "This pool has not opened yet.");
+    // Check if epoch as ended or if pool does not exist
+    require(pool.endOfEpochBlock > block.number, "This pool epoch has ended. Please join staking new session.");
+    // Check that the deposit and any previous balances do not exceed the maximum deposit per user or the maximum size of the pool
+    require(user.amount.add(_amount) <= pool.maxDeposit, "Maximum deposit amount exceeded.");
+    require(pool.lpSupply.add(_amount) <= pool.maxLpSupply, "Maximum pool size exceeded");
     
     user.amount = user.amount.add(_amount);
     user.rewardDebt = user.rewardDebt.add(int256(_amount.mul(pool.accRewardsPerShare) / ACC_REWARDS_PRECISION));
