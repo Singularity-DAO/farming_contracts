@@ -43,7 +43,7 @@ contract SDAOTokenStaking is Ownable {
   struct PoolInfo {
     uint256 tokenPerBlock;
     uint256 lpSupply;
-    uint128 accRewardsPerShare;
+    uint256 accRewardsPerShare;
     uint64 lastRewardBlock;
     uint endOfEpochBlock;
   }
@@ -163,6 +163,36 @@ contract SDAOTokenStaking is Ownable {
     emit LogPoolAddition(pid, _lpToken);
   }
 
+<<<<<<< Updated upstream
+=======
+  // set the parameter of the pool  
+  function set(uint256 _pid, IERC20 _lpToken, uint256 _sdaoPerBlock, uint64 _lastRewardBlock, uint64 _endofepochblock, bool _withUpdate) public onlyPointsAllocatorOrOwner {
+      if (_withUpdate) {
+        massUpdatePools();
+        }
+      
+      poolInfo[_pid].tokenPerBlock = _sdaoPerBlock;
+      poolInfo[_pid].endOfEpochBlock = _endofepochblock;
+      poolInfo[_pid].lastRewardBlock = _lastRewardBlock;
+      poolInfo[_pid].accRewardsPerShare = 0;
+      poolInfo[_pid].lpSupply = 0;
+
+      lpToken[pid] = _lpToken;
+
+    }
+
+    // reset the pool
+    function resetPool(uint256 _pid) public onlyOwner {
+        delete poolInfo[i];
+    }
+
+    // reset all pools 
+    function massResetPool() public onlyOwner {
+        for (uint256 i = 0; i < poolInfo.length; i++)
+          delete poolInfo[i];
+    }
+
+>>>>>>> Stashed changes
 
   /// @dev To get the rewards per block.
   function sdaoPerBlock(uint256 _pid) public view returns (uint256 amount) {
