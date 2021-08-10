@@ -18,7 +18,7 @@ at commit hash 10148a31d9192bc803dac5d24fe0319b52ae99a4.
 *************************************************************************************************/
 
 
-contract SDAOTokenStaking is Ownable {
+contract SDAOTokenStaking is Ownable, ReentrancyGuard {
   using BoringMath for uint256;
   using BoringMath128 for uint128;
   using BoringERC20 for IERC20;
@@ -70,6 +70,9 @@ contract SDAOTokenStaking is Ownable {
   
   /// @dev Info of each user that stakes tokens.
   mapping(uint256 => mapping(address => UserInfo)) public userInfo;
+
+  /// @dev Account allowed to allocate points.
+  address public pointsAllocator;
 
   /// @dev Total rewards received from governance for distribution.
   /// Used to return remaining rewards if staking is canceled.
@@ -406,10 +409,5 @@ contract SDAOTokenStaking is Ownable {
   function poolLength() external view returns (uint256) {
     return poolInfo.length;
   }
-
-  function UserLength() external view returns (uint256) {
-    return userInfo.length;
-  }
-
 
 }
