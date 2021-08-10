@@ -181,6 +181,8 @@ contract('SDAOTokenStaking', ([alice, bob, carol, dev, minter]) => {
         
         });
 
+ 
+
         it('Create epoc with multiple Stakers for end to end operations', async () => {
         
             //Epoc - => block 0 = block 21
@@ -241,6 +243,100 @@ contract('SDAOTokenStaking', ([alice, bob, carol, dev, minter]) => {
             assert((new BigNumber(expectedRewardBob)).toFixed(), (new BigNumber(calcRewardBob)).times(rewardsFactor).toFixed());
 
             // WithdrawAndHarvest from this pool
+            const aliceRewardsTokenBal_b = await this.sdao.balanceOf(alice);
+            const aliceLPTokenBal_b = await this.lp.balanceOf(alice);
+            const bobRewardsTokenBal_b = await this.sdao.balanceOf(bob);
+            const bobLPTokenBal_b = await this.lp.balanceOf(bob);
+
+            await this.sdaostaking.withdrawAndHarvest(poolId, stakeAmountAliceBN.toFixed(), alice, { from: alice });
+            await this.sdaostaking.withdrawAndHarvest(poolId, stakeAmountBobBN.toFixed(), bob, { from: bob });
+
+            const aliceRewardsTokenBal_a = await this.sdao.balanceOf(alice);
+            const aliceLPTokenBal_a = await this.lp.balanceOf(alice);
+            const bobRewardsTokenBal_a = await this.sdao.balanceOf(bob);
+            const bobLPTokenBal_a = await this.lp.balanceOf(bob);
+
+
+            assert.equal((new BigNumber(aliceRewardsTokenBal_a)).toFixed(), (new BigNumber(aliceRewardsTokenBal_b)).plus(expectedRewardAlice).toFixed());
+            assert.equal((new BigNumber(aliceLPTokenBal_a)).toFixed(), (new BigNumber(aliceLPTokenBal_b)).plus(stakeAmountAliceBN).toFixed());
+
+            assert.equal((new BigNumber(bobRewardsTokenBal_a)).toFixed(), (new BigNumber(bobRewardsTokenBal_b)).plus(expectedRewardBob).toFixed());
+            assert.equal((new BigNumber(bobLPTokenBal_a)).toFixed(), (new BigNumber(bobLPTokenBal_b)).plus(stakeAmountBobBN).toFixed());
+
+            //await displayPoolInfo(poolId);
+        
+        });
+
+
+         it('Extend pool after end of epoc with multiple Stakers for end to end operations', async () => {
+        
+            //Epoc - => block 0 = block 21
+
+            // Get the Next Pool Id
+            const poolId = (await this.sdaostaking.poolLength()).toNumber();
+
+            let blockNumber = await web3.eth.getBlockNumber();
+            let endEpoCBlockNumber = blockNumber + 40;
+            let rewardPerBlock = 4;
+            const rewardPerBlockBN = (new BigNumber(rewardPerBlock)).times(rewardsFactor);
+            let stakeAmountAliceBN = (new BigNumber(100)).times(rewardsFactor);
+            let stakeAmountBobBN = (new BigNumber(300)).times(rewardsFactor);
+
+            const approveAmountBN = (new BigNumber("1000")).times(rewardsFactor);
+
+            // Create a New Pool
+            await this.sdaostaking.add(this.lp.address, rewardPerBlockBN.toFixed(), endEpoCBlockNumber , { from: minter }); 
+            
+            // Pool Id should get incremented
+            assert.equal((await this.sdaostaking.poolLength()).toNumber(), poolId + 1);
+
+            // Alice - Approve and Deposit into the Pool 
+            await this.lp.approve(this.sdaostaking.address, approveAmountBN.toFixed(), { from: alice });
+            const depositAliceLog = await this.sdaostaking.deposit(poolId, stakeAmountAliceBN.toFixed(), alice, { from: alice });
+
+            // Bob - Approve and Deposit into the Pool 
+            await this.lp.approve(this.sdaostaking.address, approveAmountBN.toFixed(), { from: bob });
+            const depositBobLog = await this.sdaostaking.deposit(poolId, stakeAmountBobBN.toFixed(), bob, { from: bob });
+
+            //await displayPoolInfo(poolId);       
+
+            // Advance by Block Number and compare the Rewards
+            const rewardsAlice_b = await this.sdaostaking.pendingRewards(poolId,alice);
+            const rewardsBob_b = await this.sdaostaking.pendingRewards(poolId,bob);
+            await time.advanceBlock();
+            const rewardsAlice_a = await this.sdaostaking.pendingRewards(poolId,alice);
+            const rewardsBob_a = await this.sdaostaking.pendingRewards(poolId,bob);
+
+            // Alice Rewards - Should increment by 1 (100 * 4 /  400) for tokenPerBlock = 4 
+            assert.equal((new BigNumber(rewardsAlice_b)).plus((new BigNumber(1).times(rewardsFactor))).toFixed(), (new BigNumber(rewardsAlice_a).toFixed()));
+
+            // Alice Rewards - Should increment by 3 (300 * 4 /  400) for tokenPerBlock = 4
+            //assert.equal(rewardsBob_b + 3, rewardsBob_a);
+            assert.equal((new BigNumber(rewardsBob_b)).plus((new BigNumber(3).times(rewardsFactor))).toFixed(), (new BigNumber(rewardsBob_a).toFixed()));
+            
+
+            // Moved to the end of the epoc
+            await time.advanceBlockTo(endEpoCBlockNumber + 10);
+
+          
+            let blockNumber2 = await web3.eth.getBlockNumber();
+            let endEpoCBlockNumber2 = blockNumber2 + 40;
+
+            await this.sdaostaking.extendPool(poolId, rewardPerBlockBN.toFixed(), endEpoCBlockNumber2 , { from: minter }); 
+            
+            // WithdrawAndHarvest from this pool after extend pool
+            await time.advanceBlockTo(endEpoCBlockNumber2 + 40);
+
+            const expectedRewardAlice = await this.sdaostaking.pendingRewards(poolId,alice);
+            const expectedRewardBob = await this.sdaostaking.pendingRewards(poolId,bob);
+
+            const calcRewardAlice =  ((depositBobLog.receipt.blockNumber - depositAliceLog.receipt.blockNumber) * rewardPerBlock) + ((endEpoCBlockNumber - depositBobLog.receipt.blockNumber) * 1);
+            const calcRewardBob = (endEpoCBlockNumber - depositBobLog.receipt.blockNumber) * 3;
+
+            assert((new BigNumber(expectedRewardAlice)).toFixed(), (new BigNumber(calcRewardAlice)).times(rewardsFactor).toFixed());
+            assert((new BigNumber(expectedRewardBob)).toFixed(), (new BigNumber(calcRewardBob)).times(rewardsFactor).toFixed());
+
+
             const aliceRewardsTokenBal_b = await this.sdao.balanceOf(alice);
             const aliceLPTokenBal_b = await this.lp.balanceOf(alice);
             const bobRewardsTokenBal_b = await this.sdao.balanceOf(bob);

@@ -80,7 +80,6 @@ contract SDAOTokenStaking is Ownable,ReentrancyGuard {
   /// Used to return remaining rewards if staking is canceled.
   uint256 public totalRewardsReceived;
 
-   address public pointsAllocator;
 
   // ==========  Events  ==========
 
