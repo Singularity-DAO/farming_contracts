@@ -6,6 +6,7 @@ import "./libraries/BoringMath.sol";
 import "./libraries/SignedSafeMath.sol";
 import "./libraries/BoringERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 /************************************************************************************************
 Originally from
@@ -43,7 +44,7 @@ contract SDAOTokenStaking is Ownable {
   struct PoolInfo {
     uint256 tokenPerBlock;
     uint256 lpSupply;
-    uint128 accRewardsPerShare;
+    uint256 accRewardsPerShare;
     uint64 lastRewardBlock;
     uint endOfEpochBlock;
   }
@@ -147,33 +148,19 @@ contract SDAOTokenStaking is Ownable {
     emit LogPoolAddition(pid, _lpToken);
   }
 
-  // set the parameter of the pool  
-  function set(uint256 _pid, IERC20 _lpToken, uint256 _sdaoPerBlock, uint64 _endofepochblock, bool _withUpdate) public onlyPointsAllocatorOrOwner {
-      if (_withUpdate) {
-        massUpdatePools();
-        }
+  // extendPool of the pool  
+  function extendPool(uint256 _pid, uint256 _sdaoPerBlock, uint64 _endofepochblock) public onlyPointsAllocatorOrOwner {
       
-      poolInfo[_pid].tokenPerBlock = _sdaoPerBlock;
-      poolInfo[_pid].endOfEpochBlock = _endofepochblock;
-      poolInfo[_pid].lastRewardBlock = block.number.to64();
-      poolInfo[_pid].lastRewardBlock = 0;
-      poolInfo[_pid].lpSupply = 0;
+      require(_endofepochblock > block.number && _endofepochblock > poolInfo[_pid].endOfEpochBlock , "Cannot extend the pool for past time.");
 
-      lpToken[pid] = _lpToken;
+      PoolInfo memory pool = updatePool(_pid);
 
+      pool.tokenPerBlock = _sdaoPerBlock;
+      pool.endOfEpochBlock = _endofepochblock;
+      pool.lastRewardBlock = block.number.to64();
+
+      poolInfo[_pid] = pool;
     }
-
-    // reset the pool
-    function resetPool(uint256 _pid) public onlyOwner {
-        delete poolInfo[i];
-    }
-
-    // reset all pools 
-    function massResetPool() public onlyOwner {
-        for (uint256 i = 0; i < poolInfo.length; i++)
-          delete poolInfo[i];
-    }
-
 
   /// @dev To get the rewards per block.
   function sdaoPerBlock(uint256 _pid) public view returns (uint256 amount) {
@@ -386,7 +373,7 @@ contract SDAOTokenStaking is Ownable {
   /// @dev Withdraw without caring about rewards. EMERGENCY ONLY.
   /// @param _pid The index of the pool. See `poolInfo`.
   /// @param _to Receiver of the LP tokens.  
-  function emergencyWithdraw(uint256 _pid, address _to) public NonReentrant { 
+  function emergencyWithdraw(uint256 _pid, address _to) public nonReentrant { 
 
     require(_to != address(0), "ERC20: transfer to the zero address");
 
